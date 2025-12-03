@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Santa's Sniper Gift</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #0d1b2a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            user-select: none;
+        }
+
+        canvas {
+            display: block;
+            cursor: none;
+            /* カーソルを消してスコープを表示 */
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            color: #ff4d4d;
+        }
+
+        #score {
+            font-size: 32px;
+            font-weight: bold;
+            color: #70c1b3;
+        }
+
+        #instruction {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            color: #aaa;
+            pointer-events: none;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="ui">
+        <h1>TARGET: HAPPY KIDS</h1>
+        <div>配達数: <span id="score">0</span></div>
+    </div>
+    <div id="instruction">マウスで狙い、クリックでプレゼントを高速射出！</div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+
+        // ゲーム状態
+        let score = 0;
+        let width, height;
+        let mouseX = 0;
+        let mouseY = 0;
+        let lastTime = 0;
+        let reloadTimer = 0;
+        const RELOAD_TIME = 40; // フレーム数
+
+        // オブジェクト管理
+        const bullets = [];
+        const targets = [];
+        const particles = [];
+        const snowflakes = [];
+
+        // 設定
+        const GRAVITY = 0.5;
+        const BULLET_SPEED = 35; // プレゼントの速度（非常に高速）
+        const TARGET_SPEED = 2;
+
+        // 初期化
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        window.addEventListener('mousemove', (e) => {
+            mouseX = e.clientX;
+            mouseY = e.clientY;
+        });
+
+        window.addEventListener('mousedown', () => {
+            if (reloadTimer <= 0) {
+                shoot();
+                reloadTimer = RELOAD_TIME;
+            }
+        });
+
+        // クラス定義
+
+        // 雪
+        class Snowflake {
+            constructor() {
+                this.x = Math.random() * width;
+                this.y = Math.random() * height;
+                this.size = Math.random() * 3 + 1;
+                this.speedY = Math.random() * 1 + 0.5;
+                this.speedX = (Math.random() - 0.5) * 0.5;
+            }
+            update() {
+                this.y += this.speedY;
+                this.x += this.speedX;
+                if (this.y > height) {
+                    this.y = -10;
+                    this.x = Math.random() * width;
+                }
+            }
+            draw() {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // プレゼント（弾丸）
+        class Bullet {
+            constructor(tx, ty) {
+                this.x = 0; // 左上（サンタの位置）から発射と仮定、あるいは画面外から
+                this.y = height; // 今回は左下から撃つスナイパースタイルにする
+
+                // 左下隅からマウスカーソルへのベクトル
+                const startX = 50;
+                const startY = height - 50;
+                this.x = startX;
+                this.y = startY;
+
+                const angle = Math.atan2(ty - startY, tx - startX);
+                this.vx = Math.cos(angle) * BULLET_SPEED;
+                this.vy = Math.sin(angle) * BULLET_SPEED;
+
+                this.active = true;
+                this.rotation = 0;
+                this.rotationSpeed = 0.2;
+
+                // エフェクト用
+                createMuzzleFlash(startX, startY);
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.rotation += this.rotationSpeed;
+
+                // 画面外判定
+                if (this.x > width || this.x < 0 || this.y > height || this.y < 0) {
+                    this.active = false;
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotation);
+
+                // プレゼントボックスの描画
+                ctx.fillStyle = '#d62828'; // 赤
+                ctx.fillRect(-15, -15, 30, 30);
+
+                // リボン
+                ctx.fillStyle = '#fcbf49'; // 金
+                ctx.fillRect(-5, -15, 10, 30);
+                ctx.fillRect(-15, -5, 30, 10);
+
+                ctx.restore();
+            }
+        }
+
+        // 子供（ターゲット）
+        class Target {
+            constructor() {
+                this.reset();
+                // 最初はランダムなX位置に配置
+                this.x = Math.random() * (width - 100) + 50;
+            }
+
+            reset() {
+                this.width = 30;
+                this.height = 60;
+                this.x = (Math.random() > 0.5) ? -50 : width + 50;
+                this.y = height - 100; // 地面の位置
+                this.vx = (this.x < 0) ? Math.random() * 1 + 1 : -(Math.random() * 1 + 1);
+                this.vy = 0;
+                this.isHit = false; // ヒットしたか
+                this.rotation = 0;
+                this.color = `hsl(${Math.random() * 360}, 70%, 60%)`;
+            }
+
+            update() {
+                if (!this.isHit) {
+                    // 通常歩行
+                    this.x += this.vx;
+
+                    // バウンド的な動き
+                    this.y = height - 100 + Math.sin(Date.now() / 100) * 5;
+
+                    // 画面外に出たらリセット（ただし、ヒットしてない場合のみ）
+                    if ((this.vx > 0 && this.x > width + 50) || (this.vx < 0 && this.x < -50)) {
+                        this.reset();
+                    }
+                } else {
+                    // 吹き飛んでいる状態（ラグドール物理風）
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    this.vy += GRAVITY; // 重力適用
+                    this.rotation += this.vx * 0.1; // 回転
+
+                    // 地面で跳ねる
+                    if (this.y > height - 50) {
+                        this.y = height - 50;
+                        this.vy *= -0.6; // 跳ね返り係数
+                        this.vx *= 0.8; // 摩擦
+                    }
+
+                    // 完全に画面外か、止まったら消去（リセット）
+                    if (this.x > width + 200 || this.x < -200 || (Math.abs(this.vx) < 0.1 && Math.abs(this.vy) < 0.1)) {
+                        this.reset();
+                    }
+                }
+            }
+
+            hit(bulletVx, bulletVy) {
+                if (this.isHit) return;
+                this.isHit = true;
+                score++;
+                scoreEl.innerText = score;
+
+                // 衝撃の計算：プレゼントの速度をそのまま受け継ぐ（質量差を無視して大げさに）
+                const impactFactor = 0.8;
+                this.vx = bulletVx * impactFactor;
+                this.vy = bulletVy * impactFactor - 5; // 少し上に浮く
+
+                // エフェクト
+                createImpactEffect(this.x, this.y);
+                createFloatingText(this.x, this.y - 50, "MERRY XMAS!");
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rotation);
+
+                // 棒人間的な描画
+                ctx.fillStyle = this.color; // 服
+                ctx.fillRect(-10, -20, 20, 40); // 体
+
+                ctx.fillStyle = '#ffcc99'; // 肌
+                ctx.beginPath();
+                ctx.arc(0, -30, 12, 0, Math.PI * 2); // 頭
+                ctx.fill();
+
+                if (!this.isHit) {
+                    // 通常時の顔
+                    ctx.fillStyle = 'black';
+                    ctx.fillRect(-5, -32, 4, 4); // 目
+                    ctx.fillRect(3, -32, 4, 4); // 目
+                } else {
+                    // 吹き飛び時の顔（＞＜）
+                    ctx.strokeStyle = 'black';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(-6, -34); ctx.lineTo(-2, -30);
+                    ctx.moveTo(-6, -30); ctx.lineTo(-2, -34);
+                    ctx.moveTo(2, -34); ctx.lineTo(6, -30);
+                    ctx.moveTo(2, -30); ctx.lineTo(6, -34);
+                    ctx.stroke();
+                }
+
+                // サンタ帽（クリスマス要素）
+                ctx.fillStyle = '#d62828';
+                ctx.beginPath();
+                ctx.moveTo(-12, -38);
+                ctx.lineTo(12, -38);
+                ctx.lineTo(0, -60);
+                ctx.fill();
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(0, -60, 5, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        // パーティクル（エフェクト）
+        class Particle {
+            constructor(x, y, color, type = 'rect') {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 10;
+                this.vy = (Math.random() - 0.5) * 10;
+                this.life = 1.0;
+                this.color = color;
+                this.type = type;
+                this.text = "";
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= 0.02;
+                this.vy += 0.2; // 重力
+            }
+            draw() {
+                ctx.globalAlpha = Math.max(0, this.life);
+                if (this.type === 'text') {
+                    ctx.fillStyle = '#ffff00';
+                    ctx.font = 'bold 20px Arial';
+                    ctx.fillText(this.text, this.x, this.y);
+                } else {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.x, this.y, 5, 5);
+                }
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        function createMuzzleFlash(x, y) {
+            for (let i = 0; i < 10; i++) {
+                particles.push(new Particle(x, y, '#ffcc00'));
+            }
+        }
+
+        function createImpactEffect(x, y) {
+            for (let i = 0; i < 15; i++) {
+                particles.push(new Particle(x, y, '#ffffff')); // 雪煙
+                particles.push(new Particle(x, y, '#ff0000')); // キラキラ
+            }
+        }
+
+        function createFloatingText(x, y, text) {
+            const p = new Particle(x, y, '', 'text');
+            p.text = text;
+            p.vx = 0;
+            p.vy = -2;
+            particles.push(p);
+        }
+
+        function shoot() {
+            bullets.push(new Bullet(mouseX, mouseY));
+            // 反動演出（画面を少し揺らす）
+            ctx.translate(Math.random() * 10 - 5, Math.random() * 10 - 5);
+            setTimeout(() => ctx.setTransform(1, 0, 0, 1, 0, 0), 50);
+        }
+
+        // ゲームループ
+        // 雪を初期化
+        for (let i = 0; i < 100; i++) snowflakes.push(new Snowflake());
+
+        // 子供を初期化
+        for (let i = 0; i < 5; i++) targets.push(new Target());
+
+        function update() {
+            // 背景クリア
+            ctx.fillStyle = '#0d1b2a';
+            ctx.fillRect(0, 0, width, height);
+
+            // 地面
+            ctx.fillStyle = '#e0e1dd';
+            ctx.fillRect(0, height - 80, width, 80);
+
+            // 雪
+            snowflakes.forEach(s => {
+                s.update();
+                s.draw();
+            });
+
+            // ターゲット更新
+            targets.forEach(t => {
+                t.update();
+                t.draw();
+            });
+
+            // 弾丸更新
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                let b = bullets[i];
+                b.update();
+                b.draw();
+
+                // 当たり判定
+                if (b.active) {
+                    targets.forEach(t => {
+                        if (!t.isHit) {
+                            const dx = b.x - t.x;
+                            const dy = b.y - (t.y - 30); // 頭付近を中心にする
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < 40) {
+                                t.hit(b.vx, b.vy);
+                                b.active = false; // 弾は消える（プレゼントを受け取った）
+                                createImpactEffect(b.x, b.y);
+                            }
+                        }
+                    });
+                }
+
+                if (!b.active) {
+                    bullets.splice(i, 1);
+                }
+            }
+
+            // パーティクル更新
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.update();
+                p.draw();
+                if (p.life <= 0) particles.splice(i, 1);
+            }
+
+            // スナイパースコープUI
+            drawScope();
+
+            // リロード
+            if (reloadTimer > 0) reloadTimer--;
+
+            requestAnimationFrame(update);
+        }
+
+        function drawScope() {
+            // 全体を暗くする
+            // マウス位置だけくり抜くのは重くなるので、簡易的に
+            // マウス位置を中心に円を描き、その外側を黒く塗る実装はCanvasだとglobalCompositeOperationが楽
+
+            const scopeRadius = 150;
+
+            // 一時的にコンテキストの状態を保存
+            ctx.save();
+
+            // パスを作成：全画面の矩形 + 逆回りの円（中をくり抜くため）
+            ctx.beginPath();
+            ctx.rect(0, 0, width, height);
+            ctx.arc(mouseX, mouseY, scopeRadius, 0, Math.PI * 2, true);
+            ctx.clip(); // このパス（円の外側）だけ描画領域にする
+
+            // 暗闇を描画
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(0, 0, width, height);
+
+            // 描画領域リセットのためにrestore
+            ctx.restore();
+
+            // スコープの十字線
+            ctx.strokeStyle = '#00ff00'; // 緑色のデジタルっぽい線
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(mouseX - scopeRadius, mouseY);
+            ctx.lineTo(mouseX + scopeRadius, mouseY);
+            ctx.moveTo(mouseX, mouseY - scopeRadius);
+            ctx.lineTo(mouseX, mouseY + scopeRadius);
+            ctx.stroke();
+
+            ctx.strokeStyle = '#ff0000'; // 中心点
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(mouseX, mouseY, 5, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // 円の枠
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 500; // 外側を埋めるための太い線（簡易実装）
+            ctx.beginPath();
+            ctx.arc(mouseX, mouseY, scopeRadius + 250, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // リロードインジケーター
+            if (reloadTimer > 0) {
+                ctx.fillStyle = 'white';
+                ctx.font = '16px Arial';
+                ctx.fillText("RELOADING...", mouseX + 20, mouseY + 20);
+
+                // ゲージ
+                ctx.fillStyle = 'red';
+                ctx.fillRect(mouseX - 20, mouseY + 30, 40, 5);
+                ctx.fillStyle = 'green';
+                ctx.fillRect(mouseX - 20, mouseY + 30, 40 * (1 - reloadTimer / RELOAD_TIME), 5);
+            }
+        }
+
+        update();
+
+    </script>
+</body>
+
+</html>
