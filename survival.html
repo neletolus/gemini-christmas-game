@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>サンタの悪夢：恐怖のプレゼント配り</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Creepster&family=Kosugi+Maru&display=swap');
+
+        body {
+            background-color: #1a1a1a;
+            color: white;
+            font-family: 'Kosugi Maru', sans-serif;
+            overflow: hidden;
+            /* スクロール禁止 */
+            touch-action: none;
+            /* モバイルでのデフォルトタッチ動作無効化 */
+        }
+
+        #gameCanvas {
+            background: radial-gradient(circle at center, #2a2a3a 0%, #000000 100%);
+            display: block;
+            margin: 0 auto;
+        }
+
+        .horror-font {
+            font-family: 'Creepster', cursive;
+            letter-spacing: 2px;
+        }
+
+        /* モバイル用コントローラー */
+        #mobile-controls {
+            display: none;
+        }
+
+        @media (hover: none) and (pointer: coarse) {
+            #mobile-controls {
+                display: flex;
+            }
+        }
+
+        .control-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            backdrop-filter: blur(4px);
+            user-select: none;
+            touch-action: none;
+        }
+
+        .control-btn:active {
+            background: rgba(255, 255, 255, 0.4);
+        }
+    </style>
+</head>
+
+<body class="w-full h-screen flex flex-col items-center justify-center relative">
+
+    <!-- UI Overlay -->
+    <div id="ui-layer" class="absolute inset-0 pointer-events-none flex flex-col justify-between p-4 z-10">
+        <!-- Top Bar -->
+        <div class="flex justify-between items-start w-full max-w-4xl mx-auto">
+            <div class="text-left">
+                <div class="text-gray-400 text-sm">SURVIVE TIME</div>
+                <div id="timerDisplay" class="text-4xl font-bold text-red-500 horror-font">60.00</div>
+            </div>
+            <div class="text-right">
+                <div class="text-gray-400 text-sm">PRESENTS (SPACE)</div>
+                <div id="presentCount" class="text-4xl font-bold text-green-400 horror-font">3</div>
+            </div>
+        </div>
+
+        <!-- Center Messages -->
+        <div id="messageDisplay"
+            class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center w-full">
+            <h1 class="text-5xl md:text-7xl text-red-600 horror-font mb-4 drop-shadow-[0_0_10px_rgba(255,0,0,0.8)]">
+                SANTA'S NIGHTMARE</h1>
+            <p class="text-lg md:text-xl mb-8 text-gray-300">
+                子供たちがプレゼントを求めて獣のように襲ってくる...<br>
+                プレゼントを囮（おとり）に使って60秒間逃げ切れ！
+            </p>
+            <button id="startBtn"
+                class="pointer-events-auto bg-red-700 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-full shadow-lg transform transition hover:scale-105 text-xl">
+                ゲーム開始 (SPACE)
+            </button>
+            <div class="mt-4 text-sm text-gray-500">
+                移動: 矢印キー / WASD <br>
+                プレゼント設置: SPACE / クリック
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Canvas -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Mobile Controls -->
+    <div id="mobile-controls"
+        class="absolute bottom-6 left-0 right-0 px-6 justify-between items-end z-20 pointer-events-auto w-full max-w-4xl mx-auto">
+        <!-- D-Pad area (handled by touch logic, visual only placeholder) -->
+        <div id="joystick-area" class="w-32 h-32 bg-white/10 rounded-full relative flex items-center justify-center">
+            <div id="joystick-knob" class="w-12 h-12 bg-white/40 rounded-full absolute"></div>
+        </div>
+
+        <!-- Action Button -->
+        <button id="actionBtn"
+            class="control-btn w-24 h-24 flex items-center justify-center bg-red-500/30 border-red-400">
+            🎁
+        </button>
+    </div>
+
+    <script>
+        /**
+         * ゲームの設定とロジック
+         */
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const timerDisplay = document.getElementById('timerDisplay');
+        const presentCountDisplay = document.getElementById('presentCount');
+        const messageDisplay = document.getElementById('messageDisplay');
+        const startBtn = document.getElementById('startBtn');
+        const actionBtn = document.getElementById('actionBtn');
+        const joystickArea = document.getElementById('joystick-area');
+        const joystickKnob = document.getElementById('joystick-knob');
+
+        // ゲームステート
+        let gameState = 'START'; // START, PLAYING, GAMEOVER, VICTORY
+        let lastTime = 0;
+        let timeSurvived = 0;
+        const GOAL_TIME = 60;
+        let spawnTimer = 0;
+        let difficultyMultiplier = 1;
+
+        // 入力管理
+        const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false, " ": false };
+        const inputVector = { x: 0, y: 0 }; // For joystick/keyboard combined
+
+        // エンティティ管理
+        let player;
+        let enemies = [];
+        let presents = [];
+        let particles = [];
+        let bloodParticles = [];
+
+        // 設定値
+        const PLAYER_SPEED = 220;
+        const ENEMY_SPEED_BASE = 160;
+        const ENEMY_SPAWN_RATE_BASE = 0.8; // seconds
+        const PRESENT_COOLDOWN = 1.5; // seconds to recharge 1 stock
+        const MAX_PRESENTS = 3;
+        const PRESENT_LURE_RADIUS = 250;
+        const PRESENT_DURATION = 4.0; // seconds
+
+        // クラス定義
+
+        class Player {
+            constructor() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.radius = 15;
+                this.presentStock = MAX_PRESENTS;
+                this.presentTimer = 0;
+                this.angle = 0;
+            }
+
+            update(dt) {
+                // 移動処理
+                let dx = 0;
+                let dy = 0;
+
+                if (keys.w || keys.ArrowUp) dy -= 1;
+                if (keys.s || keys.ArrowDown) dy += 1;
+                if (keys.a || keys.ArrowLeft) dx -= 1;
+                if (keys.d || keys.ArrowRight) dx += 1;
+
+                // ジョイスティック入力の合成
+                dx += inputVector.x;
+                dy += inputVector.y;
+
+                // 正規化
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 0.1) {
+                    dx /= len;
+                    dy /= len;
+                    this.angle = Math.atan2(dy, dx);
+                }
+
+                this.x += dx * PLAYER_SPEED * dt;
+                this.y += dy * PLAYER_SPEED * dt;
+
+                // 画面端の制限
+                this.x = Math.max(this.radius, Math.min(canvas.width - this.radius, this.x));
+                this.y = Math.max(this.radius, Math.min(canvas.height - this.radius, this.y));
+
+                // プレゼントのストック回復
+                if (this.presentStock < MAX_PRESENTS) {
+                    this.presentTimer += dt;
+                    if (this.presentTimer >= PRESENT_COOLDOWN) {
+                        this.presentStock++;
+                        this.presentTimer = 0;
+                        uiLayerLogic(); // FIXED: updateUI -> uiLayerLogic
+                    }
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+
+                // 影
+                ctx.beginPath();
+                ctx.ellipse(0, 15, 12, 6, 0, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fill();
+
+                // 本体 (サンタの帽子と髭を簡易表現)
+                // 体
+                ctx.fillStyle = '#D32F2F'; // Red
+                ctx.beginPath();
+                ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 髭
+                ctx.fillStyle = '#FFF';
+                ctx.beginPath();
+                ctx.arc(0, 5, 10, 0, Math.PI, false);
+                ctx.fill();
+
+                // 帽子
+                ctx.fillStyle = '#D32F2F';
+                ctx.beginPath();
+                ctx.moveTo(-12, -5);
+                ctx.lineTo(12, -5);
+                ctx.lineTo(0, -25);
+                ctx.fill();
+                // 帽子のポンポン
+                ctx.fillStyle = '#FFF';
+                ctx.beginPath();
+                ctx.arc(0, -25, 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.restore();
+            }
+
+            dropPresent() {
+                if (this.presentStock > 0) {
+                    presents.push(new Present(this.x, this.y));
+                    this.presentStock--;
+                    uiLayerLogic(); // FIXED: updateUI -> uiLayerLogic
+                    createParticles(this.x, this.y, 10, '#FFD700'); // Gold sparkles
+                }
+            }
+        }
+
+        class Enemy {
+            constructor() {
+                // 画面外からスポーン
+                const edge = Math.floor(Math.random() * 4); // 0:top, 1:right, 2:bottom, 3:left
+                const buffer = 50;
+                if (edge === 0) { this.x = Math.random() * canvas.width; this.y = -buffer; }
+                else if (edge === 1) { this.x = canvas.width + buffer; this.y = Math.random() * canvas.height; }
+                else if (edge === 2) { this.x = Math.random() * canvas.width; this.y = canvas.height + buffer; }
+                else { this.x = -buffer; this.y = Math.random() * canvas.height; }
+
+                this.width = 24;
+                this.height = 20;
+                this.speed = ENEMY_SPEED_BASE + (Math.random() * 50);
+                this.state = 'CHASE'; // CHASE, EATING
+                this.target = null;
+                this.eatTimer = 0;
+                this.animFrame = 0;
+            }
+
+            update(dt, player, presents) {
+                // ターゲット決定ロジック
+                let target = player;
+                let minDist = Infinity;
+
+                // 最も近い有効なプレゼントを探す
+                for (const p of presents) {
+                    const d = Math.hypot(p.x - this.x, p.y - this.y);
+                    if (d < PRESENT_LURE_RADIUS && d < minDist) {
+                        minDist = d;
+                        target = p;
+                    }
+                }
+
+                // ターゲットに向かう
+                const angle = Math.atan2(target.y - this.y, target.x - this.x);
+
+                // プレゼントに到達したら食べる
+                if (target instanceof Present) {
+                    const distToPresent = Math.hypot(target.x - this.x, target.y - this.y);
+                    if (distToPresent < 10) {
+                        this.state = 'EATING';
+                    } else {
+                        this.state = 'CHASE';
+                        this.x += Math.cos(angle) * this.speed * 1.5 * dt; // プレゼントには興奮して速く走る
+                        this.y += Math.sin(angle) * this.speed * 1.5 * dt;
+                    }
+                } else {
+                    this.state = 'CHASE';
+                    this.x += Math.cos(angle) * this.speed * dt;
+                    this.y += Math.sin(angle) * this.speed * dt;
+                }
+
+                // 衝突判定 (対プレイヤー)
+                const distToPlayer = Math.hypot(player.x - this.x, player.y - this.y);
+                if (distToPlayer < player.radius + 10) {
+                    return true; // Game Over trigger
+                }
+
+                // アニメーション用
+                this.animFrame += dt * 15;
+                return false;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+
+                // ターゲット方向に向けるには回転が必要だが、獣っぽさを出すためあえて固定か、
+                // あるいは移動方向に少し傾ける
+                // ここではシンプルな不気味なシルエットを描画
+
+                // 四足歩行のアニメーション（上下に跳ねる）
+                const bounce = Math.sin(this.animFrame) * 3;
+
+                // 本体（黒い塊）
+                ctx.fillStyle = '#111';
+                if (this.state === 'EATING') ctx.fillStyle = '#553333'; // 食べているときは少し赤らむ
+
+                ctx.beginPath();
+                // 歪んだ楕円
+                ctx.ellipse(0, bounce, 12, 8, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 目（光る）
+                ctx.fillStyle = '#FFFF00'; // Yellow eyes
+                ctx.beginPath();
+                ctx.arc(-4, bounce - 2, 2, 0, Math.PI * 2);
+                ctx.arc(4, bounce - 2, 2, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 手足（カサカサ動く）
+                ctx.strokeStyle = '#111';
+                ctx.lineWidth = 2;
+                const legOffset = Math.cos(this.animFrame) * 5;
+
+                // 左足
+                ctx.beginPath(); ctx.moveTo(-5, 0); ctx.lineTo(-15 + legOffset, 10); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(-18 - legOffset, 5); ctx.stroke();
+                // 右足
+                ctx.beginPath(); ctx.moveTo(5, 0); ctx.lineTo(15 - legOffset, 10); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(18 + legOffset, 5); ctx.stroke();
+
+                ctx.restore();
+            }
+        }
+
+        class Present {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.life = PRESENT_DURATION;
+                this.scale = 0; // 出現アニメーション用
+            }
+
+            update(dt) {
+                this.life -= dt;
+                if (this.scale < 1) this.scale += dt * 5;
+                if (this.scale > 1) this.scale = 1;
+                return this.life <= 0;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.scale(this.scale, this.scale);
+
+                // 効果範囲の表示 (薄い円)
+                if (this.life > 0.5) {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, PRESENT_LURE_RADIUS * (this.life / PRESENT_DURATION), 0, Math.PI * 2);
+                    ctx.strokeStyle = `rgba(255, 215, 0, ${0.3 * (this.life / PRESENT_DURATION)})`;
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+
+                // 箱
+                ctx.fillStyle = '#2E7D32'; // Green box
+                ctx.fillRect(-12, -12, 24, 24);
+
+                // リボン
+                ctx.fillStyle = '#C62828'; // Red ribbon
+                ctx.fillRect(-4, -12, 8, 24);
+                ctx.fillRect(-12, -4, 24, 8);
+
+                ctx.restore();
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color, speed) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                const angle = Math.random() * Math.PI * 2;
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+                this.life = 1.0;
+                this.decay = Math.random() * 0.05 + 0.02;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= this.decay;
+            }
+            draw(ctx) {
+                ctx.globalAlpha = this.life;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, 3, 3);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        class Snow {
+            constructor() {
+                this.x = Math.random() * canvas.width;
+                this.y = Math.random() * canvas.height;
+                this.size = Math.random() * 2 + 1;
+                this.speed = Math.random() * 50 + 20;
+            }
+            update(dt) {
+                this.y += this.speed * dt;
+                if (this.y > canvas.height) {
+                    this.y = -10;
+                    this.x = Math.random() * canvas.width;
+                }
+            }
+            draw() {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // 初期化関数
+        function init() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            // 雪の生成
+            particles = [];
+            for (let i = 0; i < 100; i++) {
+                particles.push(new Snow());
+            }
+        }
+
+        function startGame() {
+            player = new Player();
+            enemies = [];
+            presents = [];
+            bloodParticles = [];
+            timeSurvived = GOAL_TIME;
+            spawnTimer = 0;
+            gameState = 'PLAYING';
+            lastTime = performance.now();
+
+            // UI更新
+            messageDisplay.style.display = 'none';
+            uiLayerLogic();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function createParticles(x, y, count, color) {
+            for (let i = 0; i < count; i++) {
+                bloodParticles.push(new Particle(x, y, color, Math.random() * 5));
+            }
+        }
+
+        function gameOver() {
+            gameState = 'GAMEOVER';
+            createParticles(player.x, player.y, 50, '#FF0000');
+            messageDisplay.innerHTML = `
+                <h1 class="text-6xl text-red-600 horror-font mb-4">CAUGHT!</h1>
+                <p class="text-xl text-gray-300 mb-8">子供たちに捕まってしまった...</p>
+                <button onclick="startGame()" class="pointer-events-auto bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-8 rounded-full">もう一度 (SPACE)</button>
+            `;
+            messageDisplay.style.display = 'block';
+        }
+
+        function victory() {
+            gameState = 'VICTORY';
+            messageDisplay.innerHTML = `
+                <h1 class="text-6xl text-green-500 horror-font mb-4">SURVIVED!</h1>
+                <p class="text-xl text-gray-300 mb-8">無事に朝を迎えた！</p>
+                <button onclick="startGame()" class="pointer-events-auto bg-green-700 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-full">もう一度 (SPACE)</button>
+            `;
+            messageDisplay.style.display = 'block';
+        }
+
+        function uiLayerLogic() {
+            if (gameState === 'PLAYING') {
+                timerDisplay.textContent = timeSurvived.toFixed(2);
+                presentCountDisplay.textContent = player.presentStock;
+
+                // クールダウン表示（色が暗くなる）
+                if (player.presentStock === 0) {
+                    presentCountDisplay.classList.remove('text-green-400');
+                    presentCountDisplay.classList.add('text-red-500');
+                } else {
+                    presentCountDisplay.classList.add('text-green-400');
+                    presentCountDisplay.classList.remove('text-red-500');
+                }
+            }
+        }
+
+        // メインループ
+        function gameLoop(timestamp) {
+            const dt = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            // キャンバスクリア
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 雪の描画（背景）
+            particles.forEach(p => {
+                if (p instanceof Snow) {
+                    p.update(dt);
+                    p.draw();
+                }
+            });
+
+            if (gameState === 'PLAYING') {
+                // タイマー更新
+                timeSurvived -= dt;
+                if (timeSurvived <= 0) {
+                    timeSurvived = 0;
+                    victory();
+                }
+
+                // 難易度上昇（時間経過で敵のスポーン率アップ）
+                const progress = 1 - (timeSurvived / GOAL_TIME);
+                difficultyMultiplier = 1 + progress * 2;
+
+                // 敵スポーン
+                spawnTimer += dt;
+                const currentSpawnRate = Math.max(0.1, ENEMY_SPAWN_RATE_BASE / difficultyMultiplier);
+
+                if (spawnTimer > currentSpawnRate) {
+                    enemies.push(new Enemy());
+                    spawnTimer = 0;
+                }
+
+                // プレイヤー更新
+                player.update(dt);
+                player.draw();
+
+                // プレゼント更新
+                for (let i = presents.length - 1; i >= 0; i--) {
+                    if (presents[i].update(dt)) {
+                        presents.splice(i, 1);
+                    } else {
+                        presents[i].draw();
+                    }
+                }
+
+                // 敵更新
+                for (let i = enemies.length - 1; i >= 0; i--) {
+                    if (enemies[i].update(dt, player, presents)) {
+                        gameOver();
+                    }
+                    enemies[i].draw();
+                }
+
+                uiLayerLogic();
+            } else {
+                // ゲームオーバー/クリア時の背景描画継続（停止状態）
+                presents.forEach(p => p.draw());
+                enemies.forEach(e => e.draw());
+                if (player) player.draw();
+            }
+
+            // パーティクル（血しぶきなど）
+            for (let i = bloodParticles.length - 1; i >= 0; i--) {
+                bloodParticles[i].update();
+                bloodParticles[i].draw(ctx);
+                if (bloodParticles[i].life <= 0) {
+                    bloodParticles.splice(i, 1);
+                }
+            }
+
+            if (gameState === 'PLAYING' || bloodParticles.length > 0) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // イベントリスナー
+        window.addEventListener('resize', init);
+
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key) || e.key === " ") {
+                keys[e.key] = true;
+            }
+            if (e.key === " " && gameState === 'PLAYING') {
+                player.dropPresent();
+            }
+            if (e.key === " " && (gameState === 'START' || gameState === 'GAMEOVER' || gameState === 'VICTORY')) {
+                // ボタンクリックと同じ挙動にするため、単純にstartGameを呼ぶ前に少し待つなどの処理はいらないが、
+                // 即座に開始すると誤爆するので防ぎたいならここにフラグを入れる。今回はシンプルに。
+                if (document.getElementById('messageDisplay').style.display !== 'none') {
+                    startGame();
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key) || e.key === " ") {
+                keys[e.key] = false;
+            }
+        });
+
+        startBtn.addEventListener('click', startGame);
+        actionBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (gameState === 'PLAYING') player.dropPresent();
+        });
+        actionBtn.addEventListener('click', (e) => {
+            if (gameState === 'PLAYING') player.dropPresent();
+        });
+
+        // タッチ操作（ジョイスティック）
+        let touchId = null;
+        const joystickRadius = 64; // joystick-area w/2
+
+        joystickArea.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touch = e.changedTouches[0];
+            touchId = touch.identifier;
+            updateJoystick(touch.clientX, touch.clientY);
+        });
+
+        joystickArea.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                if (e.changedTouches[i].identifier === touchId) {
+                    updateJoystick(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
+                    break;
+                }
+            }
+        });
+
+        joystickArea.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            resetJoystick();
+        });
+
+        function updateJoystick(clientX, clientY) {
+            const rect = joystickArea.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            let dx = clientX - centerX;
+            let dy = clientY - centerY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            // ジョイスティックの可動範囲制限
+            const maxDist = rect.width / 2 - 24; // knob size half
+
+            let normalizedX = dx;
+            let normalizedY = dy;
+
+            if (distance > maxDist) {
+                normalizedX = (dx / distance) * maxDist;
+                normalizedY = (dy / distance) * maxDist;
+            }
+
+            joystickKnob.style.transform = `translate(${normalizedX}px, ${normalizedY}px)`;
+
+            // 入力ベクトル更新 (-1 to 1)
+            inputVector.x = dx / maxDist;
+            inputVector.y = dy / maxDist;
+
+            // クランプ
+            if (distance > maxDist) {
+                inputVector.x = dx / distance;
+                inputVector.y = dy / distance;
+            }
+        }
+
+        function resetJoystick() {
+            touchId = null;
+            joystickKnob.style.transform = `translate(0px, 0px)`;
+            inputVector.x = 0;
+            inputVector.y = 0;
+        }
+
+        // スタート
+        init();
+
+    </script>
+</body>
+
+</html>
